@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Upload, X, Image as ImageIcon, Trash2, Maximize2, Ghost, Plus } from 'lucide-react';
 
@@ -17,24 +17,94 @@ interface GalleryImage {
 
 export default function App() {
   const [images, setImages] = useState<GalleryImage[]>([]);
+  const [brandingUrl, setBrandingUrl] = useState<string | null>(null);
   const [isHovering, setIsHovering] = useState(false);
   const [selectedImage, setSelectedImage] = useState<GalleryImage | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const brandingInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFiles = useCallback((files: FileList | null) => {
+  // Load images and settings from server on mount
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [imagesRes, settingsRes] = await Promise.all([
+          fetch('/api/images'),
+          fetch('/api/settings')
+        ]);
+        
+        const imagesData = await imagesRes.json();
+        const settingsData = await settingsRes.json();
+        
+        setImages(imagesData);
+        setBrandingUrl(settingsData.brandingUrl);
+      } catch (err) {
+        console.error('Failed to load data:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    fetchData();
+  }, []);
+
+  const handleBrandingUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+      const response = await fetch('/api/settings/branding', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setBrandingUrl(data.brandingUrl);
+      }
+    } catch (err) {
+      console.error('Branding upload failed:', err);
+    }
+  };
+
+  const handleFiles = useCallback(async (files: FileList | null) => {
     if (!files) return;
 
-    const newImages: GalleryImage[] = Array.from(files)
-      .filter(file => file.type.startsWith('image/'))
-      .map(file => ({
-        id: Math.random().toString(36).substring(7),
-        url: URL.createObjectURL(file),
-        name: file.name,
-        size: file.size,
-        timestamp: Date.now(),
-      }));
+    const fileArray = Array.from(files).filter(file => file.type.startsWith('image/'));
+    
+    for (const file of fileArray) {
+      const formData = new FormData();
+      formData.append('image', file);
 
-    setImages(prev => [...newImages, ...prev]);
+      try {
+        const response = await fetch('/api/images', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (response.ok) {
+          const newImage = await response.json();
+          setImages(prev => [newImage, ...prev]);
+        } else {
+          const errorText = await response.text();
+          let errorMessage = `Upload failed: ${response.status} ${response.statusText}`;
+          try {
+            const errorJson = JSON.parse(errorText);
+            if (errorJson.error) errorMessage = errorJson.error;
+          } catch (e) {
+            // Keep status text if not JSON
+          }
+          console.error(errorMessage, errorText);
+          alert(errorMessage);
+        }
+      } catch (err) {
+        console.error('Upload failed network error:', err);
+        alert('Network error during upload. Please check your connection.');
+      }
+    }
   }, []);
 
   const onDragOver = (e: React.DragEvent) => {
@@ -50,14 +120,20 @@ export default function App() {
     handleFiles(e.dataTransfer.files);
   };
 
-  const deleteImage = (id: string, e: React.MouseEvent) => {
+  const deleteImage = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setImages(prev => {
-      const filtered = prev.filter(img => img.id !== id);
-      const deleted = prev.find(img => img.id === id);
-      if (deleted) URL.revokeObjectURL(deleted.url);
-      return filtered;
-    });
+    try {
+      const response = await fetch(`/api/images/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        setImages(prev => prev.filter(img => img.id !== id));
+        if (selectedImage?.id === id) setSelectedImage(null);
+      }
+    } catch (err) {
+      console.error('Delete failed:', err);
+    }
   };
 
   return (
@@ -87,7 +163,25 @@ export default function App() {
           </div>
           
           <div className="mt-8 pt-8 border-t border-[#1a1a1a] flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-[#111] border border-[#222]"></div>
+            <div 
+              onClick={() => brandingInputRef.current?.click()}
+              className="w-8 h-8 rounded-full bg-[#111] border border-[#222] overflow-hidden cursor-pointer hover:border-[#bfa280] transition-colors"
+            >
+              {brandingUrl ? (
+                <img src={brandingUrl} alt="Curator" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-[10px] text-white/20 uppercase">
+                  VP
+                </div>
+              )}
+            </div>
+            <input 
+              ref={brandingInputRef}
+              type="file"
+              className="hidden"
+              accept="image/*"
+              onChange={handleBrandingUpload}
+            />
             <div>
               <p className="text-[10px] font-sans uppercase tracking-wider">Julian Vane</p>
               <p className="text-[9px] font-sans uppercase tracking-wider opacity-30">Pro Curator</p>
@@ -137,7 +231,13 @@ export default function App() {
             onChange={(e) => handleFiles(e.target.files)}
           />
 
-          {images.length === 0 ? (
+          {isLoading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+              {[1, 2, 3, 4, 5, 6, 7, 8].map(idx => (
+                <div key={idx} className="aspect-square bg-[#0a0a0a] border border-[#1a1a1a] animate-pulse" />
+              ))}
+            </div>
+          ) : images.length === 0 ? (
             <section 
               className="h-[400px] border border-[#1a1a1a] bg-[#0a0a0a] flex flex-col items-center justify-center gap-4 cursor-pointer hover:bg-[#111] transition-colors"
               onDragOver={onDragOver}
